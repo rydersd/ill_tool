@@ -303,3 +303,12 @@ class SessionStateInput(BaseModel):
         default=None,
         description="Filter to specific app (None = all apps). For reset, clears only that app."
     )
+
+
+class CompareDrawingInput(BaseModel):
+    """Compare current Illustrator artboard against a reference image — returns contour-matched correction vectors."""
+    model_config = ConfigDict(str_strip_whitespace=True)
+    reference_path: str = Field(..., description="Absolute path to reference PNG/JPG image")
+    export_path: str = Field(default="", description="Where to save overlay image (auto-generated in /tmp if empty)")
+    artboard_index: int = Field(default=0, description="Which artboard to export for comparison (0-based)", ge=0)
+    min_area_pct: float = Field(default=0.5, description="Ignore contours smaller than this % of image area", ge=0.01, le=50)

@@ -115,3 +115,61 @@ class AiLayerInput(BaseModel):
     name: Optional[str] = Field(default=None, description="Layer name (for targeting existing layer)")
     new_name: Optional[str] = Field(default=None, description="New name for create/rename")
     target: Optional[str] = Field(default=None, description="Target layer name for reorder (place before this layer)")
+
+
+class AiImageTraceInput(BaseModel):
+    """Trace a raster image to vector paths in Illustrator."""
+    model_config = ConfigDict(str_strip_whitespace=True)
+    image_path: str = Field(..., description="Absolute path to PNG/JPG image file")
+    preset: str = Field(
+        default="6 Colors",
+        description=(
+            "Trace preset: '3 Colors', '6 Colors', '16 Colors', "
+            "'High Fidelity Photo', 'Low Fidelity Photo', "
+            "'Black and White Logo', 'Shades of Gray', "
+            "'Silhouettes', 'Line Art', 'Technical Drawing'"
+        ),
+    )
+    max_colors: Optional[int] = Field(
+        default=None, description="Override preset max colors (2-256)", ge=2, le=256
+    )
+    expand: bool = Field(default=True, description="Expand trace to editable vector paths")
+    recolor_to_dna: bool = Field(
+        default=False,
+        description="Recolor traced paths to current design token palette",
+    )
+    layer_name: Optional[str] = Field(default="traced", description="Name for the result group/layer")
+    x: Optional[float] = Field(default=None, description="X position after tracing")
+    y: Optional[float] = Field(default=None, description="Y position after tracing")
+
+
+class AiAnalyzeReferenceInput(BaseModel):
+    """Analyze a reference image for geometric form — returns measured shapes, not guesses."""
+    model_config = ConfigDict(str_strip_whitespace=True)
+    image_path: str = Field(..., description="Absolute path to reference PNG/JPG image")
+    min_area_pct: float = Field(default=0.5, description="Ignore contours smaller than this % of image area", ge=0.01, le=50)
+    max_contours: int = Field(default=20, description="Maximum number of shapes to return", ge=1, le=100)
+    canny_low: int = Field(default=50, description="Canny edge detection low threshold", ge=1, le=255)
+    canny_high: int = Field(default=150, description="Canny edge detection high threshold", ge=1, le=255)
+
+
+class AiReferenceUnderlayInput(BaseModel):
+    """Place a reference image as a locked background layer in Illustrator for tracing."""
+    model_config = ConfigDict(str_strip_whitespace=True)
+    image_path: str = Field(..., description="Absolute path to reference PNG/JPG image")
+    opacity: float = Field(default=40, description="Reference layer opacity 0-100", ge=0, le=100)
+    fit_to_artboard: bool = Field(default=True, description="Scale image to fit current artboard")
+    drawing_layer_name: str = Field(default="Drawing", description="Name for the active drawing layer above reference")
+
+
+class AiVtraceInput(BaseModel):
+    """Trace a raster image to clean vector paths using vtracer (better than Image Trace for cartoon/graphic art)."""
+    model_config = ConfigDict(str_strip_whitespace=True)
+    image_path: str = Field(..., description="Absolute path to PNG/JPG image")
+    mode: str = Field(default="polygon", description="Tracing mode: polygon or spline")
+    color_precision: int = Field(default=6, description="Color quantization precision 1-8 (lower = fewer colors)", ge=1, le=8)
+    filter_speckle: int = Field(default=4, description="Remove artifacts smaller than this many pixels", ge=0, le=100)
+    corner_threshold: int = Field(default=60, description="Angle threshold for corner detection (degrees)", ge=0, le=180)
+    path_precision: int = Field(default=3, description="Decimal places in SVG path coordinates", ge=1, le=8)
+    place_in_ai: bool = Field(default=False, description="Place resulting paths directly in Illustrator")
+    layer_name: str = Field(default="vtrace", description="Layer name when placing in Illustrator")
