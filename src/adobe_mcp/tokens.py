@@ -220,6 +220,146 @@ class TokenRegistry:
 
         return f"Applied '{preset_name}' preset: {preset['description']} ({len(preset['tokens'])} tokens set)"
 
+    def load_dna_preset(self, dna_path: str | Path) -> str:
+        """Load a Design DNA JSON and convert its palette/typography/spacing to design tokens.
+
+        Reads a DNA file (e.g., designers-republic.json) and maps its structured
+        aesthetic data into the token registry so composition tools can reference
+        design values by token name ($color.primary, $type.heading, etc.).
+
+        Conversions performed:
+            - palette.colors[role] -> color.{role} with hex->rgb conversion
+            - typography.heading/body -> type.heading, type.body
+            - spacing fields -> spacing.density, spacing.whitespace_ratio
+            - personality -> meta.personality, meta.aesthetic_name
+
+        Args:
+            dna_path: Path to a Design DNA JSON file.
+
+        Returns:
+            Summary string describing how many tokens were loaded and from which aesthetic.
+        """
+        dna_path = Path(dna_path)
+        if not dna_path.exists():
+            return f"DNA file not found: {dna_path}"
+
+        data = json.loads(dna_path.read_text())
+        count = 0
+
+        aesthetic_name = data.get("synthesis", {}).get("aesthetic_name", dna_path.stem)
+
+        # ── Palette colors: hex -> rgb tokens ────────────────────────────
+        palette = data.get("palette", {})
+        for color_entry in palette.get("colors", []):
+            role = color_entry.get("role", "unknown")
+            hex_val = color_entry.get("hex", "")
+            if hex_val.startswith("#") and len(hex_val) >= 7:
+                r = int(hex_val[1:3], 16)
+                g = int(hex_val[3:5], 16)
+                b = int(hex_val[5:7], 16)
+                note = color_entry.get("note", "")
+                self.set(
+                    f"color.{role}",
+                    {"r": r, "g": g, "b": b, "hex": hex_val},
+                    category="color",
+                    description=f"{aesthetic_name}: {note}" if note else f"{aesthetic_name} palette",
+                )
+                count += 1
+
+        # ── Typography: heading + body tokens ────────────────────────────
+        typography = data.get("typography", {})
+        heading = typography.get("heading", {})
+        if heading:
+            self.set(
+                "type.heading",
+                {
+                    "style": heading.get("style", "bold-geometric-sans"),
+                    "weight": heading.get("weight", "bold"),
+                    "scale_ratio": typography.get("scale_ratio", 3.0),
+                },
+                category="typography",
+                description=f"{aesthetic_name}: heading typography",
+            )
+            count += 1
+
+        body = typography.get("body", {})
+        if body:
+            self.set(
+                "type.body",
+                {
+                    "style": body.get("style", "geometric-sans"),
+                    "weight": body.get("weight", "regular"),
+                },
+                category="typography",
+                description=f"{aesthetic_name}: body typography",
+            )
+            count += 1
+
+        # ── Spacing: density + whitespace ratio ──────────────────────────
+        spacing = data.get("spacing", {})
+        density = spacing.get("density", {})
+        if density:
+            self.set(
+                "spacing.density",
+                density.get("value", "normal"),
+                category="spacing",
+                description=f"{aesthetic_name}: element density ({density.get('confidence', 0):.0%} confidence)",
+            )
+            count += 1
+
+        whitespace = spacing.get("whitespace_ratio", {})
+        if whitespace:
+            self.set(
+                "spacing.whitespace_ratio",
+                whitespace.get("value", 0.3),
+                category="spacing",
+                description=f"{aesthetic_name}: whitespace ratio (range {whitespace.get('range', [])})",
+            )
+            count += 1
+
+        # ── Composition metadata ─────────────────────────────────────────
+        composition = data.get("composition", {})
+        if composition:
+            self.set(
+                "composition.balance",
+                composition.get("balance", {}).get("value", "balanced"),
+                category="composition",
+                description=f"{aesthetic_name}: composition balance",
+            )
+            self.set(
+                "composition.grid",
+                composition.get("grid_type", {}).get("value", "standard"),
+                category="composition",
+                description=f"{aesthetic_name}: grid type",
+            )
+            count += 2
+
+        # ── Personality / meta ───────────────────────────────────────────
+        personality = data.get("personality", {})
+        if personality:
+            self.set(
+                "meta.personality",
+                personality.get("value", ""),
+                category="meta",
+                description=f"{aesthetic_name}: {', '.join(personality.get('descriptors', [])[:3])}",
+            )
+            self.set(
+                "meta.aesthetic_name",
+                aesthetic_name,
+                category="meta",
+                description=f"Design DNA aesthetic: {aesthetic_name}",
+            )
+            count += 2
+
+        return (
+            f"Loaded '{aesthetic_name}' DNA preset: {count} tokens set "
+            f"(palette: {len(palette.get('colors', []))}, "
+            f"typography: {1 if heading else 0}+{1 if body else 0}, "
+            f"spacing: {1 if density else 0}+{1 if whitespace else 0}, "
+            f"composition: {2 if composition else 0}, "
+            f"meta: {2 if personality else 0})"
+        )
+
     @property
     def count(self) -> int:
         return len(self._tokens)

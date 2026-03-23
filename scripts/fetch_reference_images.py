@@ -5,11 +5,14 @@ for composite DNA synthesis.
 
 USAGE:
     uv run python scripts/fetch_reference_images.py --url <url> [--count N] [--output-dir <path>]
+    uv run python scripts/fetch_reference_images.py --url <url> --dna-name designers-republic --optimize
 
 OPTIONS:
     --url         Source URL to scrape images from (required)
     --count       Maximum number of images to download (default: 12)
     --output-dir  Directory to save images (default: auto-created temp dir)
+    --dna-name    Design DNA aesthetic name — auto-saves to .backup/claude/memory/design-dna/images/{name}/
+    --optimize    Convert downloaded images to WebP (quality 60, max 1200px dimension, ~80-120KB each)
 
 OUTPUT:
     JSON to stdout with image paths, metadata, and any warnings.
@@ -18,6 +21,7 @@ EXAMPLES:
     uv run python scripts/fetch_reference_images.py --url "https://pinterest.com/user/board/"
     uv run python scripts/fetch_reference_images.py --url "https://example.com/gallery" --count 8
     uv run python scripts/fetch_reference_images.py --url "https://dribbble.com/shots" --output-dir ./refs
+    uv run python scripts/fetch_reference_images.py --url "https://pinterest.com/user/board/" --dna-name designers-republic --optimize
 """
 
 import argparse
@@ -33,8 +37,23 @@ from urllib.parse import urljoin, urlparse
 import httpx
 
 
+# ── Optional Pillow import for --optimize flag ──────────────────────────
+# Pillow is required only when --optimize is used. Import lazily so the
+# script works for basic downloads without it installed.
+_PIL_AVAILABLE = False
+try:
+    from PIL import Image
+    _PIL_AVAILABLE = True
+except ImportError:
+    pass
+
+
 # Minimum image dimension heuristic — skip tiny icons/avatars
 MIN_DIMENSION_HEURISTIC = 200
+
+# WebP optimization defaults
+OPTIMIZE_MAX_DIMENSION = 1200
+OPTIMIZE_QUALITY = 60
 
 # Common icon/avatar path fragments to filter out
 SKIP_PATTERNS = [
@@ -241,6 +260,105 @@ def download_images(
     return downloaded
 
 
+def optimize_image(src_path: Path, dst_path: Path, max_dim: int = OPTIMIZE_MAX_DIMENSION, quality: int = OPTIMIZE_QUALITY) -> dict:
+    """Convert an image to WebP with constrained dimensions.
+
+    Resizes to fit within max_dim x max_dim (preserving aspect ratio) and
+    saves as WebP at the given quality level. Target: ~80-120KB per image,
+    compressed enough for storage but retains enough visual detail for LLM
+    vision analysis to identify composition, typography, density, and color.
+
+    Returns metadata dict with original and optimized sizes.
+    """
+    if not _PIL_AVAILABLE:
+        raise RuntimeError(
+            "Pillow is required for --optimize. Install with: uv pip install Pillow"
+        )
+
+    img = Image.open(src_path)
+
+    # Convert RGBA/palette to RGB for WebP compatibility
+    if img.mode in ("RGBA", "P", "LA"):
+        img = img.convert("RGB")
+
+    # Resize if either dimension exceeds max_dim, preserving aspect ratio
+    original_size = img.size
+    if img.width > max_dim or img.height > max_dim:
+        img.thumbnail((max_dim, max_dim), Image.LANCZOS)
+
+    img.save(dst_path, format="WEBP", quality=quality, method=4)
+
+    return {
+        "original_dimensions": list(original_size),
+        "optimized_dimensions": list(img.size),
+        "original_bytes": src_path.stat().st_size,
+        "optimized_bytes": dst_path.stat().st_size,
+    }
+
+
+def resolve_dna_image_dir(dna_name: str) -> Path:
+    """Resolve the image directory for a named Design DNA aesthetic.
+
+    Looks for the DNA image storage relative to the project root:
+        .backup/claude/memory/design-dna/images/{dna_name}/
+
+    Creates the directory structure if it doesn't exist.
+    """
+    # Walk up from this script's location to find the project root
+    # (script is at scripts/fetch_reference_images.py, root is one level up)
+    project_root = Path(__file__).resolve().parent.parent
+    dna_dir = project_root / ".backup" / "claude" / "memory" / "design-dna" / "images" / dna_name
+    dna_dir.mkdir(parents=True, exist_ok=True)
+    return dna_dir
+
+
+def update_manifest(dna_dir: Path, images: list[dict], source_url: str) -> None:
+    """Update the manifest.json in a DNA image directory with new image entries.
+
+    Reads the existing manifest (if any), appends new image entries, and
+    writes it back. Preserves existing key_observations and metadata.
+    """
+    manifest_path = dna_dir / "manifest.json"
+
+    # Load existing manifest or create a new one
+    if manifest_path.exists():
+        manifest = json.loads(manifest_path.read_text())
+    else:
+        manifest = {
+            "aesthetic": dna_dir.name,
+            "source": source_url,
+            "image_count": 0,
+            "format": "webp",
+            "max_dimension": OPTIMIZE_MAX_DIMENSION,
+            "quality": OPTIMIZE_QUALITY,
+            "key_observations": [],
+            "images": [],
+        }
+
+    # Build entries for newly added images
+    for img in images:
+        entry = {
+            "file": Path(img["path"]).name,
+            "original_url": img.get("original_url", ""),
+            "size_bytes": img.get("optimized_bytes", img.get("size_bytes", 0)),
+            "analysis": {
+                "density": None,
+                "typography_dominance": None,
+                "composition": None,
+                "hierarchy_contrast": None,
+            },
+        }
+        # Include optimization metadata when available
+        if "optimized_dimensions" in img:
+            entry["dimensions"] = img["optimized_dimensions"]
+        manifest["images"].append(entry)
+
+    manifest["image_count"] = len(manifest["images"])
+    manifest["source"] = source_url
+
+    manifest_path.write_text(json.dumps(manifest, indent=4))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Fetch reference images from a URL for composite DNA synthesis",
@@ -248,10 +366,30 @@ def main() -> None:
     parser.add_argument("--url", required=True, help="Source URL to scrape images from")
     parser.add_argument("--count", type=int, default=12, help="Max images to download (default: 12)")
     parser.add_argument("--output-dir", help="Output directory (default: auto temp dir)")
+    parser.add_argument(
+        "--dna-name",
+        help="Design DNA aesthetic name — auto-saves to .backup/claude/memory/design-dna/images/{name}/",
+    )
+    parser.add_argument(
+        "--optimize",
+        action="store_true",
+        help="Convert images to WebP (quality 60, max 1200px) for efficient storage + LLM vision analysis",
+    )
     args = parser.parse_args()
 
-    # Setup output directory
-    if args.output_dir:
+    # Validate --optimize has Pillow available
+    if args.optimize and not _PIL_AVAILABLE:
+        print(
+            json.dumps({
+                "error": "Pillow is required for --optimize. Install with: uv pip install Pillow",
+            }),
+        )
+        sys.exit(1)
+
+    # Setup output directory — --dna-name takes precedence over --output-dir
+    if args.dna_name:
+        output_dir = resolve_dna_image_dir(args.dna_name)
+    elif args.output_dir:
         output_dir = Path(args.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
     else:
@@ -316,6 +454,37 @@ def main() -> None:
     # Download
     downloaded = download_images(image_urls, output_dir, args.count)
 
+    # Post-process: optimize images to WebP if requested
+    if args.optimize and downloaded:
+        optimized_images = []
+        for img_info in downloaded:
+            src = Path(img_info["path"])
+            # Target filename: ref_NNN.webp (replace original extension)
+            dst = src.with_suffix(".webp")
+
+            try:
+                opt_meta = optimize_image(src, dst)
+                # Remove original if it's a different file than the optimized output
+                if src != dst and src.exists():
+                    src.unlink()
+                # Update the image info with optimization data
+                img_info["path"] = str(dst)
+                img_info["optimized_bytes"] = opt_meta["optimized_bytes"]
+                img_info["original_bytes"] = opt_meta["original_bytes"]
+                img_info["optimized_dimensions"] = opt_meta["optimized_dimensions"]
+                img_info["original_dimensions"] = opt_meta["original_dimensions"]
+                optimized_images.append(img_info)
+            except Exception as e:
+                warnings.append(f"Failed to optimize {src.name}: {e}")
+                # Keep the original if optimization fails
+                optimized_images.append(img_info)
+
+        downloaded = optimized_images
+
+    # Update manifest.json if saving to a DNA directory
+    if args.dna_name and downloaded:
+        update_manifest(output_dir, downloaded, args.url)
+
     # Build output
     result = {
         "source_url": args.url,
@@ -325,6 +494,10 @@ def main() -> None:
         "total_found": len(image_urls),
         "warnings": warnings,
     }
+
+    if args.dna_name:
+        result["dna_name"] = args.dna_name
+        result["manifest_path"] = str(output_dir / "manifest.json")
 
     print(json.dumps(result, indent=2))
 
