@@ -27,6 +27,10 @@ dependencies = [
     "pydantic>=2.0.0",
     "httpx>=0.25.0",
     "websockets>=12.0",
+    "opencv-python-headless>=4.13.0.92",
+    "vtracer>=0.6.15",
+    "numpy>=2.2.6",
+    "shapely>=2.1.2",
 ]
 
 [project.scripts]

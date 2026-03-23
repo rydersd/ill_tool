@@ -1,7 +1,10 @@
 """Cross-app tools — 13 tools that work across all Adobe applications."""
 
 import json
+import os
 import subprocess
+import tempfile
+import time
 
 from adobe_mcp.config import ADOBE_APPS, IS_MACOS
 from adobe_mcp.engine import (
@@ -479,14 +482,67 @@ if (comp && comp instanceof CompItem) {{
         if result["success"]:
             try:
                 preview_data = json.loads(result["stdout"])
-                if "error" in preview_data:
+                if "error" not in preview_data:
+                    preview_data["app"] = params.app.value
+                    preview_data["hint"] = "Use the Read tool to view this image for visual analysis"
                     return json.dumps(preview_data)
-                preview_data["app"] = params.app.value
-                preview_data["hint"] = "Use the Read tool to view this image for visual analysis"
-                return json.dumps(preview_data)
             except (json.JSONDecodeError, TypeError):
-                return json.dumps({"error": "Unexpected response from preview export", "raw": result["stdout"]})
-        return f"Error: {result['stderr']}"
+                pass  # Fall through to screencapture fallback
+
+        # ── Screencapture fallback (macOS only) ───────────────────────
+        # If JSX preview failed, try capturing the app's frontmost window
+        if IS_MACOS:
+            try:
+                # Map tool app names to macOS process names
+                process_names = {
+                    "illustrator": "Adobe Illustrator",
+                    "photoshop": "Adobe Photoshop",
+                    "aftereffects": "After Effects",
+                }
+                process_name = process_names.get(params.app.value, "")
+                if process_name:
+                    capture_path = os.path.join(
+                        tempfile.gettempdir(),
+                        f"adobe_screencapture_{int(time.time())}.png",
+                    )
+                    # Get the frontmost window bounds via AppleScript
+                    ascript = (
+                        'tell application "System Events"\n'
+                        f'    tell process "{process_name}"\n'
+                        '        set frontWindow to front window\n'
+                        '        set {x, y} to position of frontWindow\n'
+                        '        set {w, h} to size of frontWindow\n'
+                        '    end tell\n'
+                        'end tell\n'
+                        'return (x as text) & "," & (y as text) & "," & (w as text) & "," & (h as text)'
+                    )
+                    bounds_result = subprocess.run(
+                        ["osascript", "-e", ascript],
+                        capture_output=True, text=True, timeout=5,
+                    )
+                    if bounds_result.returncode == 0:
+                        parts = bounds_result.stdout.strip().split(",")
+                        if len(parts) == 4:
+                            region = f"{parts[0]},{parts[1]},{parts[2]},{parts[3]}"
+                            subprocess.run(
+                                ["screencapture", "-x", "-R", region, capture_path],
+                                timeout=5,
+                            )
+                            if os.path.exists(capture_path):
+                                return json.dumps({
+                                    "path": capture_path,
+                                    "format": "png",
+                                    "app": params.app.value,
+                                    "method": "screencapture_fallback",
+                                    "hint": "Used macOS screencapture fallback. Use the Read tool to view this image.",
+                                })
+            except Exception:
+                pass  # Fall through to original error
+
+        # Return the original JSX error if fallback also failed
+        if result["success"]:
+            return json.dumps({"error": "Unexpected response from preview export", "raw": result.get("stdout", "")})
+        return json.dumps({"error": f"Preview failed: {result.get('stderr', 'unknown error')}", "app": params.app.value})
 
     # ── Session State Tool ────────────────────────────────────────────
 
@@ -634,11 +690,67 @@ if (comp && comp instanceof CompItem) {{
             count = token_registry.load(path)
             return f"Loaded {count} tokens from {path}"
 
+        if params.action == "load_dna":
+            if not params.file_path:
+                return "Error: 'file_path' required for load_dna action (path to Design DNA JSON)"
+            result = token_registry.load_dna_preset(params.file_path)
+            return result
+
+        if params.action == "font_audit":
+            # Query Illustrator for installed/available text fonts, classify
+            # them against DR-style design criteria, and auto-set typography tokens.
+            font_jsx = """
+            var fonts = [];
+            for (var i = 0; i < app.textFonts.length && i < 500; i++) {
+                var f = app.textFonts[i];
+                fonts.push({name: f.name, family: f.family, style: f.style});
+            }
+            JSON.stringify({count: fonts.length, fonts: fonts});
+            """
+
+            font_result = await _async_run_jsx("illustrator", font_jsx)
+            # _async_run_jsx returns a dict; the JSX JSON string is in the result
+            font_data = json.loads(font_result) if isinstance(font_result, str) else font_result
+
+            classified = token_registry.classify_fonts(font_data["fonts"])
+
+            # Auto-set typography tokens from top picks in each role
+            if classified["heading"]:
+                top = classified["heading"][0]
+                token_registry.set(
+                    "type.heading.font", top["name"],
+                    category="typography",
+                    description=f"Auto: {top['family']} {top['style']}",
+                )
+            if classified["display"]:
+                top = classified["display"][0]
+                token_registry.set(
+                    "type.display.font", top["name"],
+                    category="typography",
+                    description=f"Auto: {top['family']} {top['style']}",
+                )
+            if classified["label"]:
+                top = classified["label"][0]
+                token_registry.set(
+                    "type.label.font", top["name"],
+                    category="typography",
+                    description=f"Auto: {top['family']} {top['style']}",
+                )
+            if classified["body"]:
+                top = classified["body"][0]
+                token_registry.set(
+                    "type.body.font", top["name"],
+                    category="typography",
+                    description=f"Auto: {top['family']} {top['style']}",
+                )
+
+            return json.dumps(classified, indent=2)
+
         if params.action == "clear":
             token_registry.clear()
             return "All design tokens cleared."
 
-        return f"Error: Unknown action '{params.action}'. Use: set, get, list, preset, resolve, save, load, clear"
+        return f"Error: Unknown action '{params.action}'. Use: set, get, list, preset, resolve, save, load, load_dna, font_audit, clear"
 
     # ── Health Check Tool ──────────────────────────────────────────────
 

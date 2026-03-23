@@ -137,6 +137,114 @@ if (items.length === 0) {
 )
 
 _register(
+    "ai_composition_metrics",
+    app="illustrator",
+    category="analysis",
+    description="Analyze composition — item count, artboard fill, color distribution, text inventory, layer structure",
+    params={
+        "artboard_index": "Artboard index to analyze (default 0)",
+    },
+    code="""
+var doc = app.activeDocument;
+var abIdx = parseInt("{{artboard_index}}") || 0;
+var ab = doc.artboards[abIdx];
+var abRect = ab.artboardRect;
+var abW = abRect[2] - abRect[0];
+var abH = abRect[1] - abRect[3];
+var abArea = abW * abH;
+
+var counts = {
+    pathItems: doc.pathItems.length,
+    textFrames: doc.textFrames.length,
+    groupItems: doc.groupItems.length,
+    rasterItems: doc.rasterItems.length,
+    placedItems: doc.placedItems.length,
+    total: doc.pageItems.length
+};
+
+var colors = {};
+for (var i = 0; i < doc.pathItems.length && i < 500; i++) {
+    var p = doc.pathItems[i];
+    if (p.filled) {
+        try {
+            var fc = p.fillColor;
+            if (fc.typename === "RGBColor") {
+                var key = Math.round(fc.red) + "," + Math.round(fc.green) + "," + Math.round(fc.blue);
+                colors[key] = (colors[key] || 0) + 1;
+            }
+        } catch(e) {}
+    }
+}
+
+var colorArr = [];
+for (var k in colors) {
+    var parts = k.split(",");
+    colorArr.push({rgb: [parseInt(parts[0]), parseInt(parts[1]), parseInt(parts[2])], count: colors[k]});
+}
+colorArr.sort(function(a, b) { return b.count - a.count; });
+
+var texts = [];
+for (var t = 0; t < doc.textFrames.length && t < 50; t++) {
+    var tf = doc.textFrames[t];
+    var fontName = "unknown";
+    var fontSize = 0;
+    try {
+        fontName = tf.textRange.characterAttributes.textFont.name;
+        fontSize = tf.textRange.characterAttributes.size;
+    } catch(e) {}
+    texts.push({
+        content: tf.contents.substring(0, 30),
+        font: fontName,
+        size: Math.round(fontSize * 10) / 10,
+        x: Math.round(tf.left),
+        y: Math.round(tf.top),
+        width: Math.round(tf.width),
+        height: Math.round(tf.height)
+    });
+}
+
+var layers = [];
+for (var l = 0; l < doc.layers.length; l++) {
+    var ly = doc.layers[l];
+    layers.push({
+        name: ly.name,
+        items: ly.pageItems.length,
+        visible: ly.visible,
+        locked: ly.locked
+    });
+}
+
+var coveredArea = 0;
+var itemsOnArtboard = 0;
+for (var pi = 0; pi < doc.pageItems.length && pi < 500; pi++) {
+    var item = doc.pageItems[pi];
+    var gb = item.geometricBounds;
+    if (gb[2] > abRect[0] && gb[0] < abRect[2] && gb[1] > abRect[3] && gb[3] < abRect[1]) {
+        var clampL = Math.max(gb[0], abRect[0]);
+        var clampR = Math.min(gb[2], abRect[2]);
+        var clampT = Math.min(gb[1], abRect[1]);
+        var clampB = Math.max(gb[3], abRect[3]);
+        coveredArea += (clampR - clampL) * (clampT - clampB);
+        itemsOnArtboard++;
+    }
+}
+var fillRatio = abArea > 0 ? Math.round((coveredArea / abArea) * 100) / 100 : 0;
+
+var result = {
+    artboard: {width: Math.round(abW), height: Math.round(abH), area: Math.round(abArea)},
+    counts: counts,
+    fill_ratio: fillRatio,
+    items_on_artboard: itemsOnArtboard,
+    colors: colorArr.slice(0, 20),
+    text_frames: texts,
+    layers: layers
+};
+JSON.stringify(result);
+""",
+    example_params={"artboard_index": "0"},
+)
+
+_register(
     "ai_random_scatter",
     app="illustrator",
     category="generative",

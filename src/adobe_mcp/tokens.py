@@ -360,6 +360,143 @@ class TokenRegistry:
             f"meta: {2 if personality else 0})"
         )
 
+    def classify_fonts(self, font_list: list[dict]) -> dict:
+        """Classify a list of fonts against DR-style design criteria.
+
+        Scores each font on weight, geometric quality, pixel/modular feel,
+        industrial character, and penalizes serif/script families. Groups
+        top scorers into heading, display, label, and body roles.
+
+        Args:
+            font_list: List of font dicts with 'name', 'family', 'style' keys
+                       (as returned by Illustrator's app.textFonts query).
+
+        Returns:
+            Dict with 'heading', 'display', 'label', 'body' role lists,
+            each containing scored font entries, plus scan/classify counts.
+        """
+        # ── Known family lists (lowercase for case-insensitive matching) ──
+        _geometric_families = [
+            "futura", "avenir", "din", "eurostile", "gotham", "proxima",
+            "bank gothic", "knockout", "agency", "impact", "bebas", "oswald",
+            "barlow", "montserrat", "raleway", "poppins", "exo", "orbitron",
+            "rajdhani", "audiowide", "michroma", "quantico", "jura",
+            "electrolize", "share tech",
+        ]
+        _pixel_terms = [
+            "pixel", "bitmap", "ocr", "terminal", "fixedsys", "vga", "dos",
+            "chicago", "press start", "silkscreen", "munro", "upheaval",
+        ]
+        _industrial_terms = [
+            "stencil", "highway", "industrial", "roboto mono", "sf mono",
+            "fira mono", "inconsolata", "source code", "jetbrains mono",
+            "menlo", "monaco", "consolas", "andale mono", "courier",
+        ]
+        _serif_terms = [
+            "times", "georgia", "garamond", "palatino", "baskerville",
+            "cambria", "caslon", "didot", "bodoni", "book antiqua",
+        ]
+        _script_terms = [
+            "script", "brush", "handwriting", "cursive", "comic", "papyrus",
+            "zapfino", "snell", "lucida handwriting",
+        ]
+
+        # ── Bold/weight keywords ──────────────────────────────────────────
+        _bold_keywords = ["bold", "black", "heavy", "extrabold", "ultra"]
+        _medium_keywords = ["medium", "demi", "semi"]
+        _light_keywords = ["light", "thin", "ultralight", "hairline"]
+
+        def _substring_match(text: str, terms: list[str]) -> bool:
+            text_lower = text.lower()
+            return any(t in text_lower for t in terms)
+
+        scored: list[dict] = []
+
+        for font in font_list:
+            family = font.get("family", "")
+            style = font.get("style", "")
+            name = font.get("name", "")
+            style_lower = style.lower()
+
+            # Weight score
+            weight_score = 0
+            if any(kw in style_lower for kw in _bold_keywords):
+                weight_score = 3
+            elif any(kw in style_lower for kw in _medium_keywords):
+                weight_score = 1
+            elif any(kw in style_lower for kw in _light_keywords):
+                weight_score = -3
+
+            # Geometric sans score
+            geometric_score = 3 if _substring_match(family, _geometric_families) else 0
+
+            # Pixel / modular score
+            pixel_score = 3 if _substring_match(family, _pixel_terms) else 0
+
+            # Industrial / tech score
+            industrial_score = 2 if _substring_match(family, _industrial_terms) else 0
+
+            # Anti-DR penalty (serif or script families)
+            anti_dr_penalty = 0
+            if _substring_match(family, _serif_terms):
+                anti_dr_penalty = -5
+            elif _substring_match(family, _script_terms):
+                anti_dr_penalty = -5
+
+            scored.append({
+                "name": name,
+                "family": family,
+                "style": style,
+                "weight_score": weight_score,
+                "geometric_score": geometric_score,
+                "pixel_score": pixel_score,
+                "industrial_score": industrial_score,
+                "anti_dr_penalty": anti_dr_penalty,
+            })
+
+        # ── Role assignment ───────────────────────────────────────────────
+        def _top(fonts: list[dict], key_fn, n: int = 5, filter_fn=None) -> list[dict]:
+            pool = [f for f in fonts if filter_fn(f)] if filter_fn else list(fonts)
+            pool.sort(key=key_fn, reverse=True)
+            return [
+                {"name": f["name"], "family": f["family"], "style": f["style"], "score": key_fn(f)}
+                for f in pool[:n]
+            ]
+
+        heading = _top(
+            scored,
+            key_fn=lambda f: f["weight_score"] + f["geometric_score"] + f["anti_dr_penalty"],
+        )
+        display = _top(
+            scored,
+            key_fn=lambda f: f["pixel_score"] + f["anti_dr_penalty"],
+        )
+        label = _top(
+            scored,
+            key_fn=lambda f: f["industrial_score"] + f["anti_dr_penalty"],
+        )
+        body = _top(
+            scored,
+            key_fn=lambda f: f["geometric_score"] + f["anti_dr_penalty"],
+            filter_fn=lambda f: f["weight_score"] >= 0,
+        )
+
+        # Count fonts that scored positively in at least one category
+        classified_count = sum(
+            1 for f in scored
+            if (f["weight_score"] + f["geometric_score"] + f["pixel_score"]
+                + f["industrial_score"] + f["anti_dr_penalty"]) > 0
+        )
+
+        return {
+            "heading": heading,
+            "display": display,
+            "label": label,
+            "body": body,
+            "total_scanned": len(font_list),
+            "total_classified": classified_count,
+        }
+
     @property
     def count(self) -> int:
         return len(self._tokens)
