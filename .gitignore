@@ -61,3 +61,4 @@ reference/
 
 # Relay operation cache (append-only logs, snapshots)
 .cache/
+tests/fixtures/*.png
