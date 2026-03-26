@@ -783,3 +783,36 @@ class AiLandmarkAxisInput(BaseModel):
     visible_landmarks: Optional[str] = Field(default=None, description="JSON array of visible landmark names")
     view_angle: Optional[float] = Field(default=None, description="View rotation degrees (0=front, 90=side)")
     symmetric: bool = Field(default=True, description="Assume bilateral symmetry for inference")
+
+
+# ── Contour Scanner Model ────────────────────────────────────
+
+
+class AiContourScannerInput(BaseModel):
+    """Axis-guided contour scanner: scan a reference image along an axis to extract edge contour paths."""
+    model_config = ConfigDict(str_strip_whitespace=True)
+    action: str = Field(..., description="Action: scan_feature, place_contour")
+    image_path: str = Field(..., description="Absolute path to reference image")
+    # Axis definition
+    axis_center_x: float = Field(default=0.0, description="Axis center X in pixel coordinates")
+    axis_center_y: float = Field(default=0.0, description="Axis center Y in pixel coordinates")
+    axis_angle: float = Field(default=90.0, description="Axis angle in degrees (0=right, 90=up in AI / down in pixel)")
+    # Scan parameters
+    scan_start: float = Field(default=-100.0, description="Start distance along axis from center (pixels)")
+    scan_end: float = Field(default=100.0, description="End distance along axis from center (pixels)")
+    scan_step: float = Field(default=2.0, description="Step size along axis (pixels)", gt=0)
+    cross_range: float = Field(default=80.0, description="Half-width of cross-axis scan (pixels)", gt=0)
+    sample_step: float = Field(default=1.0, description="Step size along cross-axis (pixels)", gt=0)
+    # Edge detection thresholds
+    bright_threshold: int = Field(default=80, description="Pixel brightness above which is 'background'", ge=0, le=255)
+    dark_threshold: int = Field(default=30, description="Pixel brightness below which is 'feature'", ge=0, le=255)
+    # Curve fitting
+    error_threshold: float = Field(default=2.0, description="Bezier fitting error threshold (pixels)", gt=0)
+    max_segments: Optional[int] = Field(default=None, description="Max bezier segments for curve fitting")
+    # Place contour params
+    contour_json: Optional[str] = Field(default=None, description="JSON contour data from scan_feature (for place_contour)")
+    character_name: str = Field(default="character", description="Character identifier for rig transform lookup")
+    path_name: str = Field(default="scanned_contour", description="Name for created path")
+    layer_name: str = Field(default="Drawing", description="Target layer in Illustrator")
+    closed: bool = Field(default=True, description="Close the contour path")
+    stroke_width: float = Field(default=2.0, ge=0.1, description="Stroke width for placed path")
